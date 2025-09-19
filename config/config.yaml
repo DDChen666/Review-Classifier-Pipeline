@@ -1,0 +1,51 @@
+paths:
+  base_output_dir: data
+  raw_dir: data/raw
+  processed_dir: data/processed
+  labeling_dir: data/labeling
+  splits_dir: data/splits
+  logs_dir: logs
+
+scraping:
+  google_play:
+    enabled: true
+    app_id: "com.fubon.aibank"
+    lang: "zh_TW"
+    country: "tw"
+    review_count: 1000
+  app_store:
+    enabled: true
+    app_id: 6479990131
+    country: "tw"
+    review_count: 1000
+    request_delay: 1.0
+    max_pages: null
+
+merging:
+  output_filename_pattern: "merged_reviews_{timestamp}.csv"
+  encoding: "utf-8-sig"
+
+cleaning:
+  min_length: 5
+  min_chinese_chars: 2
+  enable_emoji_removal: true
+
+labeling:
+  provider: "gemini"
+  gemini:
+    api_key_env: "GEMINI_API_KEY"
+    model: "gemini-2.5-flash"
+    batch_size: 100
+    max_retries: 5
+    retry_delay_sec: 30.0
+    validate_max_rounds: 8
+
+splitting:
+  test_size: 0.2
+  random_state: 42
+  stratify_field: "primary"
+
+logging:
+  level: "INFO"
+  fmt: "%(asctime)s [%(levelname)s] %(name)s - %(message)s"
+  file: "logs/pipeline.log"
