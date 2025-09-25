@@ -1,6 +1,155 @@
 # Review Classifier Pipeline
 
-**Language / 語言：** [简体中文](#简体中文) | [English](#english)
+
+**Language / 語言：** [繁體中文](#繁體中文) | [简体中文](#简体中文) | [English](#english)
+
+## 繁體中文
+
+一個可配置、可擴展的管線，用於抓取應用商店評論，統一與清洗資料，藉助大型語言模型完成自動標註，併產生適合下游機器學習流程的分層數據集。
+
+### 項目亮點
+
+- **配置驅動**：所有運行參數均存放於 `config/config.yaml`，Python 源碼中沒有硬編碼常量。
+- **可組合 CLI**：`main.py` 提供模塊化指令（`crawl`、`merge`、`prepare-labeling`、`label`、`split`、`run-all`）。每個階段都顯式接收輸入輸出路徑，避免依賴「最新文件」這類脆弱的推測。
+- **可擴展抽象**：爬蟲、處理器與標註器共享簡單的基類接口，便於插入新的數據來源或 AI 模型。
+- **健壯的標註循環**：Gemini 標註器支持批次請求、嚴格的輸出驗證，並會自動重新標註任何無效樣本。
+- **面向生產的體驗**：集中化日誌、依賴聲明、帶時間戳的確定性文件名、清晰的倉庫結構。
+
+### 倉庫結構
+
+```
+.
+├── config/
+│   └── config.yaml             # 全局設置
+├── data/                       # 運行時產物（忽略，使用 `.gitkeep` 佔位）
+├── legacy_scripts/             # 保留的原型腳本
+├── logs/                       # 日誌文件（忽略，使用 `.gitkeep` 佔位）
+├── src/
+│   └── review_pipeline/
+│       ├── __init__.py
+│       ├── cli.py              # Click CLI 綁定
+│       ├── config.py           # Pydantic 配置模型與加載器
+│       ├── logging_utils.py    # 日誌初始化
+│       ├── crawlers/
+│       │   ├── base.py         # 抽象爬蟲約定
+│       │   ├── app_store.py
+│       │   └── google_play.py
+│       ├── processors/
+│       │   ├── cleaning.py     # 文本規範化 + 未標註 JSON 輸出
+│       │   ├── labeling.py     # 標註工作流編排
+│       │   ├── merger.py       # 平臺合併邏輯
+│       │   └── splitter.py     # 分層訓練/測試劃分
+│       ├── labelers/
+│       │   ├── base.py         # BaseLabeler 抽象類
+│       │   └── gemini.py       # Gemini 標註器與驗證邏輯
+│       ├── pipeline/
+│       │   └── orchestrator.py # 高階管線封裝
+│       └── utils/
+│           └── files.py
+├── main.py                     # 入口腳本，注入 `src/` 並調用 CLI
+├── requirements.txt            # Python 依賴
+└── .gitignore
+```
+
+### 快速開始
+
+1. **安裝依賴**
+   ```bash
+   python -m venv .venv
+   .venv\Scripts\activate         # Windows PowerShell
+   pip install -r requirements.txt
+   ```
+
+2. **配置密鑰**
+   - 創建（或更新）`.env` 文件，並設置 `GEMINI_API_KEY=<your-api-key>`。
+   - 或者在運行命令前導出相應的環境變量。
+
+3. **調整配置**
+   - 編輯 `config/config.yaml` 以更改應用 ID、評論數量、清洗閾值或模型設置。
+   - 每個配置段落在下方均有說明。
+
+4. **運行單獨階段**
+   ```bash
+   python main.py crawl --timestamp 20250919_120000
+   python main.py merge --google-csv data/raw/google_play_reviews_20250919_120000.csv --app-store-csv data/raw/app_store_reviews_20250919_120000.csv
+   python main.py prepare-labeling --merged-csv data/processed/merged_reviews_20250919_120000.csv
+   python main.py label --unlabeled-json data/labeling/unlabeled_reviews_20250919_120000.json
+   python main.py split --labeled-json data/labeling/labeled_reviews_20250919_120000_fixed.json
+   ```
+
+5. **一鍵執行全流程**
+   ```bash
+   python main.py run-all
+   ```
+   該命令會返回包含所有生成產物路徑的 JSON 摘要。文件名帶有時間戳，每個階段都由調度器顯式傳遞上游產物路徑。
+
+### 配置參考（`config/config.yaml`）
+
+#### `paths`
+控制生成產物與日誌的存放位置，可使用項目根目錄的相對路徑或絕對路徑。目錄會在需要時自動創建。
+
+#### `scraping`
+可選的兩組爬蟲配置（`google_play`、`app_store`）。可通過 `enabled` 開關。需要提供應用 ID、地區/國家以及目標評論數量。App Store 爬蟲還支持 `request_delay`（秒）與可選的 `max_pages` 限制。
+
+#### `merging`
+定義合併後 CSV 的文件名模式（必須包含 `{timestamp}`）以及讀寫評論時的編碼。
+
+#### `cleaning`
+標註前的文本規範化：最小字符數、是否移除表情符號等。輸出可供標註的未標註 JSON 數組。
+
+#### `labeling`
+- `provider`：當前支持 `gemini`（爲未來擴展預留）。
+- `gemini`：包括環境變量名、模型 ID、批次與重試/超時策略、驗證循環設置。
+
+Gemini 實現會加載 `.env`，調用 Google GenAI 客戶端，驗證輸出，並在所有樣本通過或達到輪次上限前重複標註。
+
+#### `splitting`
+控制分層訓練/測試劃分：`test_size`、`random_state` 以及用於分層的列（默認 `primary`）。
+
+#### `logging`
+標準日誌等級、格式以及文件位置。除了控制檯輸出，還配置了 5 MB × 3 份備份的輪轉日誌。
+
+### CLI 指令
+
+| 指令 | 功能 | 關鍵選項 |
+|------|------|----------|
+| `crawl` | 運行已啓用的爬蟲並保存原始 CSV | `--timestamp` 可覆蓋文件名使用的時間戳 |
+| `merge` | 合併一個或兩個平臺 CSV 爲統一格式 | `--google-csv`、`--app-store-csv`、`--timestamp` |
+| `prepare-labeling` | 清洗合併後的 CSV 並輸出未標註 JSON | `--merged-csv`、`--timestamp` |
+| `label` | 標註未標註 JSON，可選跳過驗證/修復 | `--unlabeled-json`、`--timestamp`、`--skip-validation` |
+| `split` | 生成分層的訓練/測試 JSON | `--labeled-json`、`--timestamp` |
+| `run-all` | 以單一時間戳執行完整管線 | （僅繼承 CLI 的配置選項） |
+
+所有指令都支持 `--config` 參數以指定不同的 YAML 配置。
+
+### 可擴展性
+
+- **新增爬蟲**：在 `src/review_pipeline/crawlers/` 下實現繼承 `BaseCrawler` 的類，註冊對應配置，並在 `ReviewPipeline.run_crawl` 中接入。
+- **新增標註器**：繼承 `BaseLabeler`，實現 `annotate` 與 `validate`，在 `LabelingConfig` 中暴露配置，並在 `LabelingWorkflow.__post_init__` 中註冊新的 provider。
+- **自定義處理器**：參考 `processors/` 結構，將邏輯封裝在簡單方法中，並通過 `pipeline/orchestrator.py` 編排，即可自動獲得 CLI 支持。
+
+### 日誌與產物
+
+- 日誌默認寫入 `logs/pipeline.log`（輪轉）。可在配置文件中調整格式/等級，或直接查看控制檯輸出。
+- 數據集產物位於 `data/` 下的 `raw/`、`processed/`、`labeling/` 與 `splits/` 子目錄。倉庫中通過 `.gitkeep` 保留目錄結構。
+
+### 舊版腳本
+
+最初的單體筆記本/腳本保存在 `legacy_scripts/`，僅供參考，新管線不會調用，但可在遷移階段提供歷史背景。
+
+### 驗證
+
+- `python -m compileall src main.py` —— 確保所有模塊能正確解析。
+- 運行功能需先安裝依賴並提供有效的 API 憑證，詳見快速開始章節。
+
+### 後續計劃
+
+- 根據需要配置更多爬蟲來源或替代的標註服務。
+- 引入自動化測試（例如基於樁的響應）以保護關鍵處理器。
+- 當管線穩定後，可容器化 CLI 或接入編排服務/計劃任務。
+
+---
+
 
 ## 简体中文
 
